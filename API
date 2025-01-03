@@ -1,0 +1,31 @@
+# import libraries
+from binance.spot import Spot as Client
+import pandas as pd
+import plotly.graph_objects as go
+from IPython.display import display
+
+# url to access Binance API
+base_url = "https://api.binance.com"
+
+# create Client to access API
+spot_client = Client(base_url = base_url)
+
+# requesting exchange info
+# used to access list of assets and their permission
+exchange_info = spot_client.exchange_info()
+exchange_info
+
+# access historical prices
+btcusd_history = spot_client.klines("BTCUSDT", "1d", limit = 50000)
+display(btcusd_history[:2])
+
+# constructs dataset
+columns = ['time', 'open', 'high', 'low', 'close', 'volume', 'close_time',
+'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
+'taker_buy_quote_asset_volume', 'ignore']
+
+# writes data into csv file
+with open('test.csv', 'w') as f:
+writer = csv.writer(f)
+for i in range(len(btcusd_history)):
+writer.writerow(btcusd_history[i])
