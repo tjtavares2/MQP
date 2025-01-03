@@ -1,0 +1,225 @@
+# autoencoder code ---------
+import numpy as np
+import pandas as pd
+import os
+import sys
+import csv
+import json
+import xlrd
+from datetime import datetime
+from sklearn.preprocessing import scale
+from tensorflow.keras.layers import Input, Dense, Lambda, Dropout
+from tensorflow.keras.models import Model
+from keras import regularizers
+from keras.callbacks import Callback
+from keras import backend as K
+import tensorflow as tf
+from keras.regularizers import Regularizer
+import scipy.sparse
+from keras.models import load_model
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from sklearn.model_selection import GridSearchCV
+from keras.wrappers.scikit_learn import KerasClassifier
+from tensorflow import keras
+from scipy.linalg import svdvals
+import openpyxl
+tf.compat.v1.get_default_graph()
+tf.compat.v1.disable_v2_behavior()
+tf.compat.v1.disable_eager_execution()
+
+#Load in the return data and format the date column
+crypt_ret = pd.read_excel(r"C:\Users\gigak\Downloads\APIData_Updated_SET_LOGReturns.xlsx")
+crypt_ret['time'] = pd.to_datetime(crypt_ret['time'], format ='%Y -%m -%d')
+#The set index pandas function here modifies the existing data frame, and the first parameter
+#of the function uses one or more existing columns or arrays (of the correct length)
+crypt_ret.set_index(crypt_ret['time'], inplace = True)
+crypt_ret.drop(columns = ['time'], inplace = True)
+
+#This function definition scales the return data between -1 and 1 as well as separatese the data between
+#training and testing
+def get_ret_data(k,h, crypt_ret = crypt_ret):
+X = crypt_ret.values
+X = X.astype('float32')
+X = X[0: (890 + h), :]
+#X = scale(X)
+X = X / np.max(np.abs(X))
+#x_train = X[0: (712 + k), :]
+#x_test = X[(713 + k):(890+k+h),:]
+#x_train = X[0: 890, :]
+#x_test = [[]]
+x_train = X[0: (63 + k), :]
+x_test = X[0: 890, :]
+return x_train, x_test, crypt_ret
+
+#This function specifies the loss function for our autoencoder model
+def mse_l1_loss(encoded_layer, lambda_):
+def loss(y_true, y_pred):
+62
+return K.mean(K.square(y_pred - y_true) + lambda_*K.sum(K.abs(encoded_layer)))
+return loss
+#This function builds the autoencoder architecture. The function is currently set up for a SLAE
+#but can be generalized to include more layers.
+def build_l1_ae_model(l1_reg, input_dim, encoding_dim, activation1, activation2, lr):
+input_img = tf.keras.Input(shape=(input_dim))
+z_layer_input = Lambda(lambda x:K.l2_normalize(x,axis=1))(input_img)
+encoded = tf.keras.layers.Dense(encoding_dim, activation=activation1)(z_layer_input)
+encoded_norm = Lambda(lambda x:K.l2_normalize(x,axis=1))(encoded)
+#create encoder model
+encoder = Model(input_img, encoded)
+decoded = Dense(input_dim, activation=activation2)(encoded)
+#create autoencoder model
+autoencoder = Model(input_img, decoded)
+opt = keras.optimizers.Adam(learning_rate = lr)
+autoencoder.compile(optimizer=opt, loss = mse_l1_loss(encoded_norm, l1_reg))
+return encoder, autoencoder
+#This function builds the autoencoder architecture. The function is currently set up for a MLAE.
+def build_mlae_model(l1_reg, input_dim, z1_dim, encoding_dim, z2_dim, activation_z1,
+activation_mid, activation_z2, activation_dec, lr):
+input_img = tf.keras.Input(shape=(input_dim))
+z1_layer_input = Lambda(lambda x:K.l2_normalize(x,axis=1))(input_img)
+z1_layer = tf.keras.layers.Dense(z1_dim, activation = activation_z1)(z1_layer_input)
+z1_layer_norm = Lambda(lambda x:K.l2_normalize(x,axis=1))(z1_layer)
+mid_layer_input = z1_layer_norm
+encoded = tf.keras.layers.Dense(encoding_dim, activation=activation_mid)(mid_layer_input)
+encoded_norm = Lambda(lambda x:K.l2_normalize(x,axis=1))(encoded)
+
+#create encoder model
+encoder = Model(input_img, encoded)
+z2_layer_input = encoded_norm
+z2_layer = tf.keras.layers.Dense(z2_dim, activation = activation_z2)(z2_layer_input)
+z2_layer_norm = Lambda(lambda x:K.l2_normalize(x,axis=1))(z2_layer)
+decoded = Dense(input_dim, activation=activation_dec)(z2_layer_norm)
+#create autoencoder model
+autoencoder = Model(input_img, decoded)
+opt = keras.optimizers.Adam(learning_rate = lr)
+autoencoder.compile(optimizer=opt, loss = mse_l1_loss(encoded_norm, l1_reg))
+return encoder, autoencoder
+#This function sorts the rows of a data matrix independently from largest to smallest values
+def sort_by_row(z):
+z_sorted = None
+for i in np.arange(z.shape[0]):
+#sorted in reverse yields a data matrix in descending order
+z_s = sorted(z[i,:], reverse=True)
+if z_sorted is None:
+z_sorted = z_s
+else:
+#This vstack command builds the sorted matrix up iteratively by first finding
+#the next row to be appended and then appending it on the existing matrix.
+#It begins with an empty data matrix.
+z_sorted = np.vstack((z_sorted, z_s))
+return z_sorted
+#This function estimates the dimension of a data matrix by taking
+#the singular values or SVPs and computing how many SVPs explain
+#more than the specified threshold percentage variance
+def algorithm_2(z, threshold):
+tot = sum(z)
+z_pct = [(i/tot) for i in sorted(z, reverse = True)]
+z_gt_theta = [i for i in z_pct if i >= threshold]
+return len(z_gt_theta)
+#This function estimates the dimension of a matrix by taking the ordered singular values
+#or SVPs and sequentially finding out how many values are needed to explain the
+#threshold cumulative percent variance
+def algorithm_3(SVPs, threshold):
+tot = sum(np.square(SVPs))
+dim = 0
+for i in range(1, (len(SVPs) + 1)):
+if sum(np.square(SVPs[0:i]))/tot >= threshold:
+dim = i
+return dim
+
+#This code builds the autoencoder model based off one combination parameter choices
+#and fits it to the data for one k value
+activation_z1 = 'elu'
+activation_z2 = 'elu'
+activation_mid = 'elu'
+activation_dec = 'sigmoid'
+64
+activation1 = 'softmax'
+activation2 = 'tanh'
+lr = 0.001
+l1_reg = 5e-5
+z1_dim = 12
+encoding_dim = 12
+z2_dim = 12
+epochs = 1000
+batch_size = 256
+k= [1, 96, 97, 98, 99, 100, 306, 307, 308, 309, 310, 566, 567, 568, 569, 570, 826]
+KVDE_list = []
+svps = []
+N = 5
+avg_loss_total = 0
+for j in k:
+z_mus = []
+k_val_dim_ests = []
+for q in range(0,N):
+x_train, x_test, crypt_ret = get_ret_data(k=j, h = 0)
+input_dim = x_train.shape[1]
+encoder, autoencoder = build_l1_ae_model(l1_reg = l1_reg, input_dim = input_dim,
+encoding_dim = encoding_dim, activation1 = activation1,
+activation2 = activation2, lr = lr)
+#encoder2, autoencoder2 = build_mlae_model(l1_reg = l1_reg, input_dim = input_dim,
+#z1_dim = z1_dim, encoding_dim = encoding_dim, z2_dim = z2_dim, activation_z1 = activation_z1,
+#activation_mid = activation_mid, activation_z2 = activation_z2, activation_dec = activation_dec,
+#lr = lr)
+history1 = autoencoder.fit(x_train, x_train, epochs = epochs, batch_size = batch_size, verbose = 0)
+total_loss = 0
+for i in history1.history['loss']:
+total_loss += i
+print(f"Average loss at step {j} is {(total_loss / len(history1.history['loss']))}")
+avg_loss_total += (total_loss / len(history1.history['loss']))
+#history2 = autoencoder2.fit(x_train, x_train, epochs = epochs, batch_size = batch_size, verbose = 0)
+#This code computes the SVPs and predicts the estimated dimension using the
+#algorithm_2() and algorithm_3() functions
+z1 = encoder.predict(x_train)
+z_row_sorted1 = sort_by_row(z1)
+#SVPs
+z_mu1 = np.mean(z_row_sorted1, axis = 0)
+alg_2_dim1 = algorithm_2(z_mu1, 0.01)
+alg_3_dim1 = algorithm_3(z_mu1, 0.85)
+#z2 = encoder2.predict(x_train)
+#z_row_sorted2 = sort_by_row(z2)
+#SVPs
+#z_mu2 = np.mean(z_row_sorted2, axis = 0)
+
+#alg_2_dim2 = algorithm_2(z_mu2, 0.01)
+#alg_3_dim2 = algorithm_3(z_mu2, 0.85)
+#print(alg_2_dim)
+print(f"Estimated dimension at step k = {j} is: {alg_3_dim1}")
+k_val_dim_ests.append(alg_3_dim1)
+z_mus.append(z_mu1)
+#print(z_mus)
+#print('Estimated dimension for deep autoencoder:', alg_3_dim2)
+#print(tf.version.VERSION)
+#print(z_mu2)
+#print(z2)
+#print(z_row_sorted)
+#with open('autoencoder_recon.csv', 'w', newline='') as file:
+#writer = csv.writer(file)
+#writer.writerows(z)
+
+z_mu_avg = [sum(sub_list) / len(sub_list) for sub_list in zip(*z_mus)]
+svps.append(z_mu_avg)
+KVDE_list.append(k_val_dim_ests)
+print(svps)
+avg_loss_total = avg_loss_total / (N * len(k))
+print("The average total loss over all trials is: ", avg_loss_total)
+final_dimension_estimates = []
+for x in KVDE_list:
+final_dimension_estimates.append(sum(x) / len(x))
+print(final_dimension_estimates)
+z_scree = []
+for j in svps:
+individual_scree = []
+for i in range(len(j)):
+individual_scree.append(j[i] / sum(j))
+z_scree.append(individual_scree)
+plt.rcParams['figure.figsize'] = (8,8)
+for i in range(len(z_scree)):
+x_axis = [1,2,3,4,5,6,7,8,9,10,11,12]
+y_axis = z_scree[i]
+plt.plot(x_axis, y_axis, label = "k = {value}".format(value = k[i]))
+plt.legend()
+plt.xlabel('SVP Number')
+plt.ylabel('Variance Explained')
+plt.show()
